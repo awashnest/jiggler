@@ -11,6 +11,12 @@ from ctypes import wintypes
 
 # Windows API imports for mouse movement (no external dependencies needed)
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+# Execution state flags to prevent sleep/display off
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
@@ -26,12 +32,19 @@ def set_cursor_pos(x, y):
     user32.SetCursorPos(x, y)
 
 def move_mouse():
-    """Move mouse slightly and return to original position."""
-    x, y = get_cursor_pos()
-    # Move 1 pixel right then back
-    set_cursor_pos(x + 1, y)
+    """Move mouse slightly and return to original position.
+    Uses mouse_event instead of SetCursorPos so Windows registers real input
+    and resets the idle timer.
+    """
+    MOUSEEVENTF_MOVE = 0x0001
+    # Move 1 pixel right, then 1 pixel left (relative movement)
+    user32.mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0)
     time.sleep(0.05)
-    set_cursor_pos(x, y)
+    user32.mouse_event(MOUSEEVENTF_MOVE, -1, 0, 0, 0)
+    # Also explicitly reset the idle timer as a safety net
+    kernel32.SetThreadExecutionState(
+        ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    )
 
 class MouseJiggler:
     def __init__(self):
@@ -54,6 +67,10 @@ class MouseJiggler:
         """Start the mouse jiggling."""
         if not self.running:
             self.running = True
+            # Tell Windows to keep the system and display awake
+            kernel32.SetThreadExecutionState(
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+            )
             self.jiggle_thread = threading.Thread(target=self.jiggle_loop, daemon=True)
             self.jiggle_thread.start()
             self.update_icon()
@@ -61,6 +78,8 @@ class MouseJiggler:
     def stop_jiggling(self):
         """Stop the mouse jiggling."""
         self.running = False
+        # Allow Windows to sleep again
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS)
         if self.jiggle_thread:
             self.jiggle_thread.join(timeout=1)
         self.update_icon()
@@ -81,6 +100,8 @@ class MouseJiggler:
     def quit_app(self, icon=None, item=None):
         """Quit the application."""
         self.running = False
+        # Restore normal sleep behavior on exit
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS)
         if self.icon:
             self.icon.stop()
 
